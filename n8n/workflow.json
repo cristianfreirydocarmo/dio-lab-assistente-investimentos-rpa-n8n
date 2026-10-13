@@ -1,0 +1,403 @@
+{
+  "name": "Assistente de Investimentos (RPA + IA)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "clientes",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "0b6f0d0e-1a11-4c55-9a01-000000000001",
+      "name": "Webhook - Receber Clientes",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "7d1c3a52-5f0e-4b8e-9d36-2c9a4e1b0a01"
+    },
+    {
+      "parameters": {
+        "url": "https://digitalinnovationone.github.io/dio-lab-assistente-investimentos-rpa-n8n/data.csv",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "0b6f0d0e-1a11-4c55-9a01-000000000002",
+      "name": "Baixar data.csv",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "0b6f0d0e-1a11-4c55-9a01-000000000003",
+      "name": "Ler CSV de Investimentos",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Código do nó \"Cruzar Perfil x Investimentos\" (Code node, modo \"Run Once for All Items\").\n// Mantido aqui só para leitura/versionamento: o mesmo código está embutido no n8n/workflow.json.\n//\n// Entrada:\n//   - $input.all()  -> linhas do data.csv (perfil, produto, minimo, rentabilidade)\n//   - Webhook body  -> { clientes: [{ nome, email, saldo, perfil }], usar_ia?: boolean }\n// Saída: um item por cliente, já com o produto recomendado e as alternativas.\n\n// Estimativa usada só para comparar \"IPCA+6.0%\" com taxas prefixadas.\nconst IPCA_ESTIMADO = 4.5;\n\nconst webhook = $('Webhook - Receber Clientes').first().json;\nconst body = webhook.body || {};\nconst clientes = Array.isArray(body) ? body : (body.clientes || []);\nconst usarIa = body.usar_ia === true || String(webhook.query?.ia).toLowerCase() === 'true';\n\n// \"R$ 12.500,00\" -> 12500\nconst paraNumero = (valor) =>\n  Number(String(valor).replace(/[^\\d,.-]/g, '').replace(/\\./g, '').replace(',', '.')) || 0;\n\nconst formatarReais = (valor) =>\n  valor.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });\n\n// \"13.0%\" -> 13 | \"IPCA+6.0%\" -> 10.5 | \"Variável\" -> null\nconst taxaAnual = (rentabilidade) => {\n  const texto = String(rentabilidade).trim();\n  const ipca = texto.match(/^IPCA\\s*\\+\\s*([\\d.,]+)%$/i);\n  if (ipca) return IPCA_ESTIMADO + Number(ipca[1].replace(',', '.'));\n  const fixa = texto.match(/^([\\d.,]+)%$/);\n  return fixa ? Number(fixa[1].replace(',', '.')) : null;\n};\n\nconst normalizar = (texto) => String(texto).trim().toLowerCase();\n\nconst produtos = $input.all().map(({ json }) => ({\n  perfil: String(json.perfil).trim(),\n  produto: String(json.produto).trim(),\n  minimo: paraNumero(json.minimo),\n  rentabilidade: String(json.rentabilidade).trim(),\n  taxa: taxaAnual(json.rentabilidade),\n}));\n\nconst descrever = (p) =>\n  `${p.produto} (rentabilidade ${p.rentabilidade}, aporte mínimo ${formatarReais(p.minimo)})`;\n\nreturn clientes.map((cliente) => {\n  const saldo = paraNumero(cliente.saldo);\n  const doPerfil = produtos.filter((p) => normalizar(p.perfil) === normalizar(cliente.perfil));\n  const elegiveis = doPerfil.filter((p) => p.minimo <= saldo);\n\n  // Regra: maior rentabilidade conhecida; se nenhuma for numérica (renda variável),\n  // o produto de maior aporte mínimo que o saldo comporta.\n  const ordenados = [...elegiveis].sort(\n    (a, b) => (b.taxa ?? -1) - (a.taxa ?? -1) || b.minimo - a.minimo,\n  );\n  const recomendado = ordenados[0] || null;\n  const alternativas = ordenados.slice(1);\n\n  // Saldo abaixo de todos os mínimos: indica o produto de entrada mais acessível.\n  const maisAcessivel = [...doPerfil].sort((a, b) => a.minimo - b.minimo)[0] || null;\n\n  let recomendacaoTexto;\n  if (recomendado) {\n    recomendacaoTexto = descrever(recomendado);\n  } else if (maisAcessivel) {\n    recomendacaoTexto = `juntar ${formatarReais(maisAcessivel.minimo - saldo)} para começar com ${descrever(maisAcessivel)}`;\n  } else {\n    recomendacaoTexto = 'falar com um especialista, pois não temos produtos cadastrados para esse perfil';\n  }\n\n  return {\n    json: {\n      nome: cliente.nome,\n      primeiro_nome: String(cliente.nome).trim().split(/\\s+/)[0],\n      email: cliente.email,\n      perfil: cliente.perfil,\n      saldo: cliente.saldo,\n      saldo_numero: saldo,\n      produto_recomendado: recomendado ? recomendado.produto : null,\n      recomendacao_texto: recomendacaoTexto,\n      alternativas: alternativas.map((p) => p.produto),\n      alternativas_texto: alternativas.length ? alternativas.map(descrever).join('; ') : 'nenhuma no momento',\n      produtos_do_perfil: doPerfil.map(descrever).join('; '),\n      usar_ia: usarIa,\n    },\n  };\n});\n"
+      },
+      "id": "0b6f0d0e-1a11-4c55-9a01-000000000004",
+      "name": "Cruzar Perfil x Investimentos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "nome",
+              "value": "={{ $json.nome }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "email",
+              "value": "={{ $json.email }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "perfil",
+              "value": "={{ $json.perfil }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "saldo",
+              "value": "={{ $json.saldo }}",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "produto_recomendado",
+              "value": "={{ $json.produto_recomendado }}",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "alternativas",
+              "value": "={{ $json.alternativas }}",
+              "type": "array"
+            },
+            {
+              "id": "a7",
+              "name": "mensagem",
+              "value": "={{ ({\n  'Conservador': 'Olá, ' + $json.primeiro_nome + '! Como seu perfil é Conservador, nosso foco é segurança e renda fixa. Com seu saldo de ' + $json.saldo + ', recomendamos ' + $json.recomendacao_texto + '. ' + ($json.alternativas.length ? 'Outras opções seguras para você: ' + $json.alternativas_texto + '. ' : '') + 'Seu dinheiro protegido e rendendo com tranquilidade.',\n  'Moderado': 'Olá, ' + $json.primeiro_nome + '! Seu perfil Moderado pede um mix equilibrado entre renda fixa e variável. Com seu saldo de ' + $json.saldo + ', recomendamos ' + $json.recomendacao_texto + '. ' + ($json.alternativas.length ? 'Para diversificar, considere também: ' + $json.alternativas_texto + '. ' : '') + 'Equilíbrio entre segurança e crescimento.',\n  'Arrojado': 'Olá, ' + $json.primeiro_nome + '! Com seu perfil Arrojado, o foco é ações e maior potencial de retorno. Com seu saldo de ' + $json.saldo + ', recomendamos ' + $json.recomendacao_texto + '. ' + ($json.alternativas.length ? 'Para ampliar sua carteira: ' + $json.alternativas_texto + '. ' : '') + 'Lembre-se: maior potencial de retorno vem com maior risco.'\n})[$json.perfil] ?? ('Olá, ' + $json.primeiro_nome + '! Não identificamos seu perfil de investidor. Que tal refazer seu questionário de perfil para você receber a melhor recomendação?') }}",
+              "type": "string"
+            },
+            {
+              "id": "a8",
+              "name": "origem_mensagem",
+              "value": "template",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0b6f0d0e-1a11-4c55-9a01-000000000009",
+      "name": "Mensagem Estática (Template)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        880,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Cruzar Perfil x Investimentos').item.json.usar_ia }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "0b6f0d0e-1a11-4c55-9a01-000000000005",
+      "name": "Usar IA?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Cliente: {{ $('Cruzar Perfil x Investimentos').item.json.nome }}\nPerfil de investidor: {{ $('Cruzar Perfil x Investimentos').item.json.perfil }}\nSaldo disponível: {{ $('Cruzar Perfil x Investimentos').item.json.saldo }}\nProduto recomendado pela regra da casa: {{ $('Cruzar Perfil x Investimentos').item.json.recomendacao_texto }}\nOutras opções elegíveis para o saldo: {{ $('Cruzar Perfil x Investimentos').item.json.alternativas_texto }}\nTodos os produtos do perfil: {{ $('Cruzar Perfil x Investimentos').item.json.produtos_do_perfil }}\n\nEscreva a mensagem de recomendação para este cliente.",
+        "options": {
+          "systemMessage": "Você é o assistente de relacionamento de uma corretora de investimentos e escreve mensagens curtas e personalizadas para clientes.\n\nRegras:\n- Escreva em português do Brasil, tratando o cliente pelo primeiro nome.\n- Entre 60 e 110 palavras, em texto corrido, sem markdown, sem emojis e sem assinatura.\n- Ajuste o tom ao perfil: Conservador = segurança e renda fixa; Moderado = equilíbrio entre renda fixa e variável; Arrojado = ações e maior potencial de retorno, deixando claro o risco.\n- Considere o saldo do cliente: explique em uma frase por que o produto recomendado faz sentido para esse valor.\n- Cite apenas produtos e números que aparecem nos dados recebidos, escritos em algarismos como nos dados (ex.: R$ 1.000,00 e 14.0%). Nunca invente taxas, prazos ou promessas de ganho, e não use palavras como \"garante\" ou \"garantido\" ao falar de rentabilidade.\n- Termine com um convite para conversar com um especialista e a frase: \"Rentabilidade passada não garante rentabilidade futura.\"",
+          "batching": {
+            "batchSize": 1,
+            "delayBetweenBatches": 6000
+          }
+        }
+      },
+      "id": "0b6f0d0e-1a11-4c55-9a01-000000000006",
+      "name": "Agente de IA - Mensagem Personalizada",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1340,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3.5-flash-lite",
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "id": "0b6f0d0e-1a11-4c55-9a01-000000000007",
+      "name": "Google Gemini Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        1340,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "nome",
+              "value": "={{ $('Cruzar Perfil x Investimentos').item.json.nome }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "email",
+              "value": "={{ $('Cruzar Perfil x Investimentos').item.json.email }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "perfil",
+              "value": "={{ $('Cruzar Perfil x Investimentos').item.json.perfil }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "saldo",
+              "value": "={{ $('Cruzar Perfil x Investimentos').item.json.saldo }}",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "produto_recomendado",
+              "value": "={{ $('Cruzar Perfil x Investimentos').item.json.produto_recomendado }}",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "alternativas",
+              "value": "={{ $('Cruzar Perfil x Investimentos').item.json.alternativas }}",
+              "type": "array"
+            },
+            {
+              "id": "a7",
+              "name": "mensagem",
+              "value": "={{ $json.output ? $json.output.trim() : $('Mensagem Estática (Template)').item.json.mensagem }}",
+              "type": "string"
+            },
+            {
+              "id": "a8",
+              "name": "origem_mensagem",
+              "value": "={{ $json.output ? 'ia_gemini' : 'template_fallback' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0b6f0d0e-1a11-4c55-9a01-000000000008",
+      "name": "Formatar Resposta da IA",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "id": "0b6f0d0e-1a11-4c55-9a01-00000000000a",
+      "name": "Responder ao Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1900,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook - Receber Clientes": {
+      "main": [
+        [
+          {
+            "node": "Baixar data.csv",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Baixar data.csv": {
+      "main": [
+        [
+          {
+            "node": "Ler CSV de Investimentos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler CSV de Investimentos": {
+      "main": [
+        [
+          {
+            "node": "Cruzar Perfil x Investimentos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cruzar Perfil x Investimentos": {
+      "main": [
+        [
+          {
+            "node": "Mensagem Estática (Template)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mensagem Estática (Template)": {
+      "main": [
+        [
+          {
+            "node": "Usar IA?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Usar IA?": {
+      "main": [
+        [
+          {
+            "node": "Agente de IA - Mensagem Personalizada",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder ao Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agente de IA - Mensagem Personalizada": {
+      "main": [
+        [
+          {
+            "node": "Formatar Resposta da IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agente de IA - Mensagem Personalizada",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formatar Resposta da IA": {
+      "main": [
+        [
+          {
+            "node": "Responder ao Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo"
+  },
+  "pinData": {},
+  "active": false,
+  "id": "AssistInvestRPA01"
+}
